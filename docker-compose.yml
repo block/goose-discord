@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  agent-honk:
+    build: .
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./bot_sessions:/tmp/goose_sessions
+    restart: unless-stopped
+    
+    # Uncomment if you want to use an external goose binary
+    # volumes:
+    #   - /usr/local/bin/goose:/usr/local/bin/goose:ro
