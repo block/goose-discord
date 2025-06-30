@@ -2,6 +2,11 @@
 
 A Discord bot wrapper around Goose AI that brings the power of Goose to your Discord server!
 
+# Demo videos
+
+- Quick demo video [link](https://youtu.be/c8SPFhlZJ0o)
+- Full vibecoding session (25 mins) [link](https://youtu.be/sLI7U_ayiy0)
+
 ## Features
 
 - **Slash Command Integration**: Use `/honk` to start a new Goose session
