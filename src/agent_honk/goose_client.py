@@ -18,6 +18,22 @@ class GooseClient:
         self.goose_command = os.getenv('GOOSE_COMMAND', 'goose')
         self.docs_path = os.getenv('GOOSE_DOCS_PATH', '')
     
+    async def run_barebones(self, thread_id: str, prompt: str) -> Optional[str]:
+        """Start a new Goose session with barebones recipe (no tool calls)"""
+        try:
+            # Create a temporary directory for this session
+            session_dir = tempfile.mkdtemp(prefix=f"goose_session_{thread_id}_")
+            self.sessions[thread_id] = session_dir
+            logger.info(f"Created session directory: {session_dir}")
+            
+            # Run goose with barebones recipe
+            result = await self._run_goose_command(session_dir, prompt, thread_id, is_initial=True, use_barebones=True)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in run_barebones: {e}")
+            return None
+    
     async def run_initial(self, thread_id: str, prompt: str, use_help_recipe: bool = False) -> Optional[str]:
         """Start a new Goose session with initial prompt"""
         try:
@@ -40,7 +56,7 @@ class GooseClient:
             session_dir = self.sessions.get(thread_id)
             if not session_dir:
                 logger.warning(f"Session not found for thread {thread_id}")
-                return "🦆 Session not found. Please start a new session with `/honk` or `/assistant`"
+                return "🦆 Session not found. Please start a new session with `/session` or `/assistant`"
             
             # Get the latest user message
             user_messages = [msg for msg in history if msg["role"] == "user"]
@@ -62,7 +78,7 @@ class GooseClient:
             logger.error(f"Error in run_with_history: {e}")
             return None
     
-    async def _run_goose_command(self, session_dir: str, prompt: str, thread_id: str = None, is_initial: bool = False, use_help_recipe: bool = False) -> Optional[str]:
+    async def _run_goose_command(self, session_dir: str, prompt: str, thread_id: str = None, is_initial: bool = False, use_help_recipe: bool = False, use_barebones: bool = False) -> Optional[str]:
         """Execute goose run command and return the response"""
         try:
             logger.info(f"Running goose command in {session_dir}")
@@ -77,6 +93,15 @@ class GooseClient:
                     '--recipe', recipe_path,
                     '--params', f'docs_path={docs_path}',
                     '--params', f'user_question={prompt}',
+                    '--no-session'
+                ]
+            elif use_barebones:
+                # Use barebones recipe (no tool calls) with parameters
+                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'goose_session.yaml')
+                cmd_args = [
+                    self.goose_command, 'run',
+                    '--recipe', recipe_path,
+                    '--params', f'user_prompt={prompt}',
                     '--no-session'
                 ]
             else:

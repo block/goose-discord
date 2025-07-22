@@ -1,0 +1,18 @@
+version: 1.0.0
+title: Goose Session
+author:
+  contact: katzdave
+description: Basic Goose AI session with no tools - just LLM responses
+instructions: You are a helpful AI assistant. Respond to user prompts directly without using any tools.
+prompt: |
+  You are a helpful AI assistant. Please respond to the following user prompt:
+
+  {{ user_prompt }}
+
+  Provide a clear, helpful response without using any tools or external resources.
+
+parameters:
+  - key: user_prompt
+    input_type: string
+    requirement: user_prompt
+    description: The user's prompt or question

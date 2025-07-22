@@ -1,7 +1,7 @@
 version: 1.0.0
 title: Goose Help Assistant
 author:
-  contact: discord-bot
+  contact: katzdave
 description: Specialized assistant for helping users with Goose AI - provides responses with comprehensive documentation links
 instructions: You are a specialized Goose AI assistant focused on helping users get the most out of Goose.
 extensions:

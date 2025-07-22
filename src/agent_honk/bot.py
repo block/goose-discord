@@ -156,10 +156,10 @@ class AgentHonk(commands.Bot):
                 await channel.send(f"*(continued...)*\n{chunk}")
 
 
-# Slash command for /honk
-@discord.app_commands.command(name="honk", description="🦆 Start a new Goose AI session")
+# Slash command for /session
+@discord.app_commands.command(name="session", description="🦆 Start a new Goose AI session")
 @discord.app_commands.describe(prompt="The initial prompt for Goose")
-async def honk(interaction: discord.Interaction, prompt: str):
+async def session(interaction: discord.Interaction, prompt: str):
     """Create a new Goose thread with the given prompt"""
     logger.info(f"User {interaction.user} started new session with prompt: {prompt[:50]}...")
     
@@ -184,9 +184,9 @@ async def honk(interaction: discord.Interaction, prompt: str):
         # Add initial message showing who asked what
         await thread.send(f"<@{interaction.user.id}> asked: {prompt}")
         
-        # Send initial prompt to Goose
+        # Send initial prompt to Goose using barebones recipe
         async with thread.typing():
-            response = await bot.goose_client.run_initial(thread_id, prompt)
+            response = await bot.goose_client.run_barebones(thread_id, prompt)
             
             if response:
                 await bot._send_long_message(thread, response)
@@ -194,7 +194,7 @@ async def honk(interaction: discord.Interaction, prompt: str):
                 await thread.send("🦆 *Sad honking* - I couldn't connect to Goose right now. Please try again!")
                 
     except Exception as e:
-        logger.error(f"Error in honk command: {e}")
+        logger.error(f"Error in session command: {e}")
         if not interaction.response.is_done():
             await interaction.response.send_message(
                 "🦆 *Error honking* - Something went wrong creating the session!", 
@@ -248,11 +248,40 @@ async def assistant(interaction: discord.Interaction, prompt: str):
             )
 
 
+# Slash command for /help
+@discord.app_commands.command(name="help", description="🦆 Show available commands")
+async def help_command(interaction: discord.Interaction):
+    """Display all available commands"""
+    help_text = """
+🦆 **Agent Honk Commands**
+
+**Available Commands:**
+• `/session <prompt>` - Start a new Goose AI session with your prompt
+• `/assistant <question>` - Get help with Goose AI questions
+• `/help` - Show this help message
+
+**How to use:**
+1. Use `/session` to start a general AI session
+2. Use `/assistant` for questions about Goose AI specifically
+3. Continue conversations in the created thread
+4. Each command creates a new thread for organized discussions
+
+**Examples:**
+• `/session Write a Python script to sort a list`
+• `/assistant How do I install Goose AI?`
+
+Happy honking! 🦆
+    """
+    
+    await interaction.response.send_message(help_text, ephemeral=True)
+
+
 async def main():
     """Main entry point for the bot"""
     bot = AgentHonk()
-    bot.tree.add_command(honk)
+    bot.tree.add_command(session)
     bot.tree.add_command(assistant)
+    bot.tree.add_command(help_command)
     
     token = os.getenv('DISCORD_TOKEN')
     if not token:
