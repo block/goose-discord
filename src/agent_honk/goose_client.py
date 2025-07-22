@@ -16,8 +16,9 @@ class GooseClient:
     def __init__(self):
         self.sessions = {}  # thread_id -> session_dir
         self.goose_command = os.getenv('GOOSE_COMMAND', 'goose')
+        self.docs_path = os.getenv('GOOSE_DOCS_PATH', '')
     
-    async def run_initial(self, thread_id: str, prompt: str) -> Optional[str]:
+    async def run_initial(self, thread_id: str, prompt: str, use_help_recipe: bool = False) -> Optional[str]:
         """Start a new Goose session with initial prompt"""
         try:
             # Create a temporary directory for this session
@@ -25,8 +26,8 @@ class GooseClient:
             self.sessions[thread_id] = session_dir
             logger.info(f"Created session directory: {session_dir}")
             
-            # Run goose with the initial prompt (no --resume for first message)
-            result = await self._run_goose_command(session_dir, prompt, thread_id, is_initial=True)
+            # Run goose with the initial prompt
+            result = await self._run_goose_command(session_dir, prompt, thread_id, is_initial=True, use_help_recipe=use_help_recipe)
             return result
             
         except Exception as e:
@@ -39,7 +40,7 @@ class GooseClient:
             session_dir = self.sessions.get(thread_id)
             if not session_dir:
                 logger.warning(f"Session not found for thread {thread_id}")
-                return "🦆 Session not found. Please start a new session with `/honk`"
+                return "🦆 Session not found. Please start a new session with `/honk` or `/assistant`"
             
             # Get the latest user message
             user_messages = [msg for msg in history if msg["role"] == "user"]
@@ -54,20 +55,33 @@ class GooseClient:
             context_prompt = self._build_context_prompt(history, latest_message)
             
             # Run goose with the context-aware prompt
-            result = await self._run_goose_command(session_dir, context_prompt, thread_id)
+            result = await self._run_goose_command(session_dir, context_prompt, thread_id, use_help_recipe=False)
             return result
             
         except Exception as e:
             logger.error(f"Error in run_with_history: {e}")
             return None
     
-    async def _run_goose_command(self, session_dir: str, prompt: str, thread_id: str = None, is_initial: bool = False) -> Optional[str]:
+    async def _run_goose_command(self, session_dir: str, prompt: str, thread_id: str = None, is_initial: bool = False, use_help_recipe: bool = False) -> Optional[str]:
         """Execute goose run command and return the response"""
         try:
             logger.info(f"Running goose command in {session_dir}")
             
-            # Build goose command arguments - use --no-session to avoid interactive issues
-            cmd_args = [self.goose_command, 'run', '--text', prompt, '--no-session']
+            # Build goose command arguments
+            if use_help_recipe:
+                # Use the recipe for help sessions with parameters
+                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'goose_help.yaml')
+                docs_path = os.getenv('GOOSE_DOCS_PATH', 'https://block.github.io/goose/docs')
+                cmd_args = [
+                    self.goose_command, 'run', 
+                    '--recipe', recipe_path,
+                    '--params', f'docs_path={docs_path}',
+                    '--params', f'user_question={prompt}',
+                    '--no-session'
+                ]
+            else:
+                # Regular session
+                cmd_args = [self.goose_command, 'run', '--text', prompt, '--no-session']
             
             # Run goose command
             process = await asyncio.create_subprocess_exec(
@@ -149,6 +163,15 @@ class GooseClient:
                 continue
             if 'working directory:' in line or 'logging to' in line:
                 continue
+            # Skip tool call traces
+            if line.startswith('─── ') and ('|' in line):
+                continue
+            if line.startswith('extension_name:') or line.startswith('k:') or line.startswith('query:'):
+                continue
+            if line.startswith('save_as:') or line.startswith('url:') or line.startswith('command:'):
+                continue
+            if line.startswith('path:') and not line.startswith('path to'):
+                continue
             # Skip common CLI artifacts
             if line.strip() in ['', '---', '===']:
                 continue
@@ -162,10 +185,6 @@ class GooseClient:
         # If still empty, provide a default response
         if not result:
             result = "🦆 *Thoughtful honking* - I processed your request, but don't have a specific response."
-        
-        # Truncate if too long for Discord (2000 char limit)
-        if len(result) > 1900:
-            result = result[:1900] + "\n\n🦆 *[Response truncated - too much honking!]*"
         
         return result
     
