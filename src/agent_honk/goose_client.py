@@ -148,8 +148,18 @@ class GooseClient:
         # Remove any command prompts or system messages
         lines = response.split('\n')
         cleaned_lines = []
+        skip_until_empty = False
         
         for line in lines:
+            # Skip recipe loading information
+            if line.startswith('Loading recipe:'):
+                skip_until_empty = True
+                continue
+            if skip_until_empty:
+                if line.strip() == '':
+                    skip_until_empty = False
+                continue
+            
             # Skip empty lines at the start
             if not cleaned_lines and not line.strip():
                 continue
@@ -171,6 +181,11 @@ class GooseClient:
             if line.startswith('save_as:') or line.startswith('url:') or line.startswith('command:'):
                 continue
             if line.startswith('path:') and not line.startswith('path to'):
+                continue
+            # Skip recipe parameter display
+            if 'Parameters used to load this recipe:' in line:
+                continue
+            if line.strip().startswith('docs_path:') or line.strip().startswith('user_question:'):
                 continue
             # Skip common CLI artifacts
             if line.strip() in ['', '---', '===']:
