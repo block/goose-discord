@@ -82,11 +82,12 @@ class GooseClient:
         """Execute goose run command and return the response"""
         try:
             logger.info(f"Running goose command in {session_dir}")
+            recipes = "recipes"
             
             # Build goose command arguments
             if use_help_recipe:
                 # Use the recipe for help sessions with parameters
-                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'goose_help.yaml')
+                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), f"{recipes}/goose_help.yaml")
                 docs_path = os.getenv('GOOSE_DOCS_PATH', 'https://block.github.io/goose/docs')
                 cmd_args = [
                     self.goose_command, 'run', 
@@ -97,7 +98,7 @@ class GooseClient:
                 ]
             elif use_barebones:
                 # Use barebones recipe (no tool calls) with parameters
-                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'goose_session.yaml')
+                recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), f"{recipes}/goose_session.yaml")
                 cmd_args = [
                     self.goose_command, 'run',
                     '--recipe', recipe_path,
