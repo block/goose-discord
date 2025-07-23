@@ -88,14 +88,40 @@ class GooseClient:
             if use_help_recipe:
                 # Use the recipe for help sessions with parameters
                 recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), f"{recipes}/goose_help.yaml")
-                docs_path = os.getenv('GOOSE_DOCS_PATH', 'https://block.github.io/goose/docs')
+                docs_path = os.getenv('GOOSE_DOCS_PATH', '/Users/dkatz/git/goose/documentation')
+                docs_url = os.getenv('GOOSE_DOCS_URL', 'https://block.github.io/goose/docs/')
+                source_path = os.getenv('GOOSE_SOURCE_PATH', '/Users/dkatz/git/goose')
+                
+                # Log the parameters being used
+                logger.info(f"Help recipe parameters:")
+                logger.info(f"  docs_path: {docs_path}")
+                logger.info(f"  docs_url: {docs_url}")
+                logger.info(f"  source_path: {source_path}")
+                logger.info(f"  user_question: {prompt[:100]}...")
+                
+                # Let Goose manage its own session directory by not specifying cwd
+                # and not using --no-session so it creates a default session
                 cmd_args = [
                     self.goose_command, 'run', 
                     '--recipe', recipe_path,
                     '--params', f'docs_path={docs_path}',
-                    '--params', f'user_question={prompt}',
-                    '--no-session'
+                    '--params', f'docs_url={docs_url}',
+                    '--params', f'source_path={source_path}',
+                    '--params', f'user_question={prompt}'
+                    # No --session flag, let Goose create a default session
                 ]
+                
+                # Log the full command being executed
+                logger.info(f"Executing command: {' '.join(cmd_args)}")
+                
+                # Run goose command without specifying cwd so it uses default session location
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                    # No cwd specified - let Goose use its default session directory
+                )
+                
             elif use_barebones:
                 # Use barebones recipe (no tool calls) with parameters
                 recipe_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), f"{recipes}/goose_session.yaml")
@@ -105,17 +131,25 @@ class GooseClient:
                     '--params', f'user_prompt={prompt}',
                     '--no-session'
                 ]
+                
+                # Run goose command
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=session_dir
+                )
             else:
                 # Regular session
                 cmd_args = [self.goose_command, 'run', '--text', prompt, '--no-session']
-            
-            # Run goose command
-            process = await asyncio.create_subprocess_exec(
-                *cmd_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=session_dir
-            )
+                
+                # Run goose command
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=session_dir
+                )
             
             # Set a timeout for the process
             try:
@@ -130,8 +164,16 @@ class GooseClient:
             
             if process.returncode == 0:
                 response = stdout.decode('utf-8').strip()
-                logger.info(f"Goose command successful, response length: {len(response)}")
-                # Clean up the response (remove command echoes, etc.)
+                
+                if use_help_recipe:
+                    # Try to extract session path from stdout and get clean response
+                    jsonl_response = self._extract_from_stdout_session_path(response)
+                    if jsonl_response:
+                        logger.info(f"Using JSONL response from session path, length: {len(jsonl_response)}")
+                        return self._clean_response(jsonl_response)
+                
+                # Fallback to stdout parsing
+                logger.info(f"Fallback to stdout response, length: {len(response)}")
                 return self._clean_response(response)
             else:
                 error_msg = stderr.decode('utf-8').strip()
@@ -166,62 +208,267 @@ class GooseClient:
         
         return "\n".join(context_parts)
     
+    def _extract_final_response_from_jsonl(self, session_dir: str) -> Optional[str]:
+        """Extract the final assistant response from the session JSONL file"""
+        try:
+            # Debug: List all files in the session directory
+            logger.info(f"Checking session directory: {session_dir}")
+            all_files = []
+            for root, dirs, files in os.walk(session_dir):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    all_files.append(full_path)
+                    logger.info(f"Found file: {full_path}")
+            
+            # Look for JSONL files
+            jsonl_files = [f for f in all_files if f.endswith('.jsonl')]
+            
+            if not jsonl_files:
+                logger.warning(f"No JSONL files found in session directory. All files: {all_files}")
+                return None
+            
+            # Use the most recent JSONL file
+            jsonl_file = max(jsonl_files, key=os.path.getmtime)
+            logger.info(f"Reading session data from: {jsonl_file}")
+            
+            # Read the JSONL file and find the last assistant message
+            last_assistant_message = None
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        if entry.get('role') == 'assistant' and entry.get('content'):
+                            last_assistant_message = entry['content']
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse JSONL line: {e}")
+                        continue
+            
+            if last_assistant_message:
+                logger.info(f"Found final assistant response, length: {len(last_assistant_message)}")
+                return last_assistant_message
+            else:
+                logger.warning("No assistant messages found in JSONL file")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error reading JSONL file: {e}")
+            return None
+
+    async def _extract_from_goose_session(self, session_name: str) -> Optional[str]:
+        """Extract the final assistant response from Goose's default session location"""
+        try:
+            import os.path
+            
+            # Try common Goose session locations
+            possible_session_dirs = [
+                os.path.expanduser(f"~/.config/goose/sessions/{session_name}"),
+                os.path.expanduser(f"~/.goose/sessions/{session_name}"),
+                os.path.expanduser(f"~/Library/Application Support/goose/sessions/{session_name}"),  # macOS
+            ]
+            
+            for session_dir in possible_session_dirs:
+                logger.info(f"Checking Goose session directory: {session_dir}")
+                if os.path.exists(session_dir):
+                    logger.info(f"Found session directory: {session_dir}")
+                    # List files in the session directory
+                    try:
+                        files = os.listdir(session_dir)
+                        logger.info(f"Files in session directory: {files}")
+                        
+                        # Look for JSONL files
+                        jsonl_files = [f for f in files if f.endswith('.jsonl')]
+                        if jsonl_files:
+                            jsonl_file = os.path.join(session_dir, jsonl_files[0])
+                            logger.info(f"Reading session data from: {jsonl_file}")
+                            
+                            # Read the JSONL file and find the last assistant message
+                            last_assistant_message = None
+                            with open(jsonl_file, 'r', encoding='utf-8') as f:
+                                for line in f:
+                                    try:
+                                        entry = json.loads(line.strip())
+                                        if entry.get('role') == 'assistant' and entry.get('content'):
+                                            last_assistant_message = entry['content']
+                                    except json.JSONDecodeError as e:
+                                        logger.warning(f"Failed to parse JSONL line: {e}")
+                                        continue
+                            
+                            if last_assistant_message:
+                                logger.info(f"Found final assistant response, length: {len(last_assistant_message)}")
+                                return last_assistant_message
+                    except Exception as e:
+                        logger.warning(f"Error reading session directory {session_dir}: {e}")
+                        continue
+            
+            logger.warning(f"No Goose session found for: {session_name}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting from Goose session: {e}")
+            return None
+
+    async def _extract_from_latest_goose_session(self) -> Optional[str]:
+        """Extract the final assistant response from the most recent Goose session"""
+        try:
+            import os.path
+            import glob
+            
+            # Try common Goose session locations
+            possible_session_base_dirs = [
+                os.path.expanduser("~/.config/goose/sessions/"),
+                os.path.expanduser("~/.goose/sessions/"),
+                os.path.expanduser("~/Library/Application Support/goose/sessions/"),  # macOS
+            ]
+            
+            latest_session_dir = None
+            latest_time = 0
+            
+            for base_dir in possible_session_base_dirs:
+                logger.info(f"Checking Goose sessions base directory: {base_dir}")
+                if os.path.exists(base_dir):
+                    # Find all session directories
+                    session_dirs = [d for d in os.listdir(base_dir) 
+                                  if os.path.isdir(os.path.join(base_dir, d))]
+                    logger.info(f"Found session directories: {session_dirs}")
+                    
+                    for session_name in session_dirs:
+                        session_dir = os.path.join(base_dir, session_name)
+                        try:
+                            # Get the modification time of the session directory
+                            mtime = os.path.getmtime(session_dir)
+                            if mtime > latest_time:
+                                latest_time = mtime
+                                latest_session_dir = session_dir
+                        except Exception as e:
+                            logger.warning(f"Error checking session {session_dir}: {e}")
+                            continue
+            
+            if not latest_session_dir:
+                logger.warning("No Goose sessions found")
+                return None
+                
+            logger.info(f"Using latest session directory: {latest_session_dir}")
+            
+            # Look for JSONL files in the latest session
+            try:
+                files = os.listdir(latest_session_dir)
+                logger.info(f"Files in latest session directory: {files}")
+                
+                # Look for JSONL files
+                jsonl_files = [f for f in files if f.endswith('.jsonl')]
+                if jsonl_files:
+                    jsonl_file = os.path.join(latest_session_dir, jsonl_files[0])
+                    logger.info(f"Reading session data from: {jsonl_file}")
+                    
+                    # Read the JSONL file and find the last assistant message
+                    last_assistant_message = None
+                    with open(jsonl_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            try:
+                                entry = json.loads(line.strip())
+                                if entry.get('role') == 'assistant' and entry.get('content'):
+                                    last_assistant_message = entry['content']
+                            except json.JSONDecodeError as e:
+                                logger.warning(f"Failed to parse JSONL line: {e}")
+                                continue
+                    
+                    if last_assistant_message:
+                        logger.info(f"Found final assistant response, length: {len(last_assistant_message)}")
+                        return last_assistant_message
+                    else:
+                        logger.warning("No assistant messages found in JSONL file")
+                        return None
+                else:
+                    logger.warning(f"No JSONL files found in session directory: {latest_session_dir}")
+                    return None
+                    
+            except Exception as e:
+                logger.warning(f"Error reading session directory {latest_session_dir}: {e}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting from latest Goose session: {e}")
+            return None
+
+    def _extract_from_stdout_session_path(self, stdout_response: str) -> Optional[str]:
+        """Extract the final assistant response by parsing the session path from stdout"""
+        try:
+            # Look for the logging path in stdout
+            # Pattern: "logging to /path/to/session.jsonl"
+            import re
+            
+            logger.info("Searching for session path in stdout...")
+            
+            # Regex to find the logging path
+            session_path_pattern = r'logging to ([^\s]+\.jsonl)'
+            match = re.search(session_path_pattern, stdout_response)
+            
+            if not match:
+                logger.warning("No session path found in stdout")
+                return None
+            
+            jsonl_path = match.group(1)
+            logger.info(f"Found session JSONL path: {jsonl_path}")
+            
+            # Check if the file exists
+            if not os.path.exists(jsonl_path):
+                logger.warning(f"Session JSONL file does not exist: {jsonl_path}")
+                return None
+            
+            # Read the JSONL file and find the last assistant message
+            last_assistant_message = None
+            with open(jsonl_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line.strip())
+                        if entry.get('role') == 'assistant' and entry.get('content'):
+                            content = entry['content']
+                            
+                            # Handle different content types
+                            if isinstance(content, str):
+                                last_assistant_message = content
+                            elif isinstance(content, list):
+                                # If content is a list, join the text parts
+                                text_parts = []
+                                for item in content:
+                                    if isinstance(item, str):
+                                        text_parts.append(item)
+                                    elif isinstance(item, dict) and item.get('type') == 'text':
+                                        text_parts.append(item.get('text', ''))
+                                last_assistant_message = ''.join(text_parts)
+                            elif isinstance(content, dict):
+                                # If content is a dict, try to get text field
+                                last_assistant_message = content.get('text', str(content))
+                            else:
+                                # Fallback: convert to string
+                                last_assistant_message = str(content)
+                                
+                            logger.debug(f"Processed assistant message, type: {type(content)}, length: {len(last_assistant_message)}")
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse JSONL line: {e}")
+                        continue
+            
+            if last_assistant_message:
+                logger.info(f"Found final assistant response from session, length: {len(last_assistant_message)}")
+                return last_assistant_message
+            else:
+                logger.warning("No assistant messages found in session JSONL file")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error extracting from stdout session path: {e}")
+            return None
+
     def _clean_response(self, response: str) -> str:
-        """Clean up the goose response for Discord"""
         if not response:
             return "🦆 *Silent honking* - Goose didn't have anything to say."
-            
-        # Remove any command prompts or system messages
-        lines = response.split('\n')
-        cleaned_lines = []
-        skip_until_empty = False
-        
-        for line in lines:
-            # Skip recipe loading information
-            if line.startswith('Loading recipe:'):
-                skip_until_empty = True
-                continue
-            if skip_until_empty:
-                if line.strip() == '':
-                    skip_until_empty = False
-                continue
-            
-            # Skip empty lines at the start
-            if not cleaned_lines and not line.strip():
-                continue
-            # Skip command echo lines
-            if line.startswith('goose run') or line.startswith('$ goose'):
-                continue
-            # Skip Goose startup messages
-            if 'running without session' in line or 'starting session' in line:
-                continue
-            if 'provider:' in line and 'model:' in line:
-                continue
-            if 'working directory:' in line or 'logging to' in line:
-                continue
-            # Skip tool call traces
-            if line.startswith('─── ') and ('|' in line):
-                continue
-            if line.startswith('extension_name:') or line.startswith('k:') or line.startswith('query:'):
-                continue
-            if line.startswith('save_as:') or line.startswith('url:') or line.startswith('command:'):
-                continue
-            if line.startswith('path:') and not line.startswith('path to'):
-                continue
-            # Skip recipe parameter display
-            if 'Parameters used to load this recipe:' in line:
-                continue
-            if line.strip().startswith('docs_path:') or line.strip().startswith('user_question:'):
-                continue
-            # Skip common CLI artifacts
-            if line.strip() in ['', '---', '===']:
-                continue
-            cleaned_lines.append(line)
-        
-        result = '\n'.join(cleaned_lines).strip()
         
         # Remove ANSI color codes
-        result = re.sub(r'\x1b\[[0-9;]*m', '', result)
+        result = re.sub(r'\x1b\[[0-9;]*m', '', response)
+        
+        # Basic cleanup - just trim whitespace
+        result = result.strip()
         
         # If still empty, provide a default response
         if not result:
